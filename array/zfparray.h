@@ -150,27 +150,57 @@ public:
       return;
     }
 
-    // instead of creating new zfp_stream, temporarily
-    // swap its bitstream, to write to zfp_header
-    bitstream* newBs = stream_open(header->buffer, ZFP_HEADER_SIZE_BITS);
-    stream_rewind(newBs);
-
-    bitstream* oldBs = zfp_stream_bit_stream(zfp);
-    zfp_stream_set_bit_stream(zfp, newBs);
-
-    zfp_field* field = zfp_field_3d(0, type, nx, ny, nz);
+    Dual_bitstream_scope_handle dbh(zfp, header, ZFP_HEADER_SIZE_BITS / CHAR_BIT);
+    Zfp_field_scope_handle zfh(type, nx, ny, nz);
 
     // write header
-    zfp_write_header(zfp, field, ZFP_HEADER_FULL);
+    zfp_write_header(zfp, zfh.field, ZFP_HEADER_FULL);
     stream_flush(zfp->stream);
-
-    // free
-    zfp_field_free(field);
-    zfp_stream_set_bit_stream(zfp, oldBs);
-    stream_close(newBs);
   }
 
 protected:
+  // "_scope_handle" classes useful when throwing exceptions in read_header()
+
+  // redirect zfp_stream->bitstream to zfp_header while object remains in scope
+  class Dual_bitstream_scope_handle {
+    public:
+      bitstream* oldBs;
+      bitstream* newBs;
+      zfp_stream* zfp;
+
+      Dual_bitstream_scope_handle(zfp_stream* zfp, zfp_header* header, size_t headerSizeBytes) :
+        zfp(zfp)
+      {
+        oldBs = zfp_stream_bit_stream(zfp);
+        newBs = stream_open(header, headerSizeBytes);
+
+        stream_rewind(newBs);
+        zfp_stream_set_bit_stream(zfp, newBs);
+      }
+
+      ~Dual_bitstream_scope_handle() {
+        zfp_stream_set_bit_stream(zfp, oldBs);
+        stream_close(newBs);
+      }
+  };
+
+  class Zfp_field_scope_handle {
+    public:
+      zfp_field* field;
+
+      Zfp_field_scope_handle() {
+        field = zfp_field_alloc();
+      }
+
+      Zfp_field_scope_handle(zfp_type type, int nx, int ny, int nz) {
+        field = zfp_field_3d(0, type, nx, ny, nz);
+      }
+
+      ~Zfp_field_scope_handle() {
+        zfp_field_free(field);
+      }
+  };
+
   // number of values per block
   uint block_size() const { return 1u << (2 * dims); }
 
@@ -254,56 +284,33 @@ protected:
   {
     // (already checked header not null in constructor)
 
-    // instead of creating new zfp_stream, temporarily
-    // swap its bitstream, to read from zfp_header
-    // (we only perform reads, but bitstream cannot accept const)
-    bitstream* newBs = stream_open((zfp_header*)header->buffer, ZFP_HEADER_SIZE_BITS);
-    stream_rewind(newBs);
-
-    bitstream* oldBs = zfp_stream_bit_stream(zfp);
-    zfp_stream_set_bit_stream(zfp, newBs);
-
-    zfp_field* field = zfp_field_alloc();
+    // cast off const to satisfy bitstream constructor (we only perform reads anyway)
+    Dual_bitstream_scope_handle dbh(zfp, (zfp_header*)header->buffer, ZFP_HEADER_SIZE_BITS / CHAR_BIT);
+    Zfp_field_scope_handle zfh;
 
     // read header to populate member variables associated with zfp_stream
-    if (zfp_read_header(zfp, field, ZFP_HEADER_FULL) != ZFP_HEADER_SIZE_BITS) {
-      zfp_field_free(field);
-      zfp_stream_set_bit_stream(zfp, oldBs);
-      stream_close(newBs);
+    if (zfp_read_header(zfp, zfh.field, ZFP_HEADER_FULL) != ZFP_HEADER_SIZE_BITS) {
       throw std::invalid_argument("Invalid ZFP header");
     }
 
     // verify read-header contents
-    if (type != field->type) {
-      zfp_field_free(field);
-      zfp_stream_set_bit_stream(zfp, oldBs);
-      stream_close(newBs);
+    if (type != zfh.field->type) {
       throw std::invalid_argument("ZFP header specified an underlying scalar type different than that for this object");
     }
 
-    if (!is_valid_dims(field->nx, field->ny, field->nz)) {
-      zfp_field_free(field);
-      zfp_stream_set_bit_stream(zfp, oldBs);
-      stream_close(newBs);
+    if (!is_valid_dims(zfh.field->nx, zfh.field->ny, zfh.field->nz)) {
       throw std::invalid_argument("ZFP header specified a dimensionality different than that for this object");
     }
 
     if (zfp_stream_compression_mode(zfp) != zfp_mode_fixed_rate) {
-      zfp_field_free(field);
-      zfp_stream_set_bit_stream(zfp, oldBs);
-      stream_close(newBs);
       throw std::invalid_argument("ZFP header specified a non fixed-rate mode, unsupported by this object");
     }
 
-    nx = field->nx;
-    ny = field->ny;
-    nz = field->nz;
-    type = field->type;
-
-    // free, restore bitstream
-    zfp_field_free(field);
-    zfp_stream_set_bit_stream(zfp, oldBs);
-    stream_close(newBs);
+    // set class variables
+    nx = zfh.field->nx;
+    ny = zfh.field->ny;
+    nz = zfh.field->nz;
+    type = zfh.field->type;
   }
 
   uint dims;           // array dimensionality (1, 2, or 3)
