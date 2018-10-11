@@ -323,8 +323,9 @@ TEST_F(TEST_FIXTURE, given_uncompatibleSerializedMem_when_factoryFuncConstruct_t
   uchar* dummyMem = new uchar[dummyLen];
   memset(dummyMem, 0, dummyLen);
 
-  array* arr = construct_from_stream((zfp_header*)dummyMem, dummyMem, dummyLen);
+  zfp_header header[1] = {0};
 
+  array* arr = construct_from_stream(header, dummyMem, dummyLen);
   ASSERT_TRUE(arr == NULL);
 
   delete[] dummyMem;

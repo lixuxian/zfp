@@ -150,16 +150,36 @@ public:
       return;
     }
 
-    Dual_bitstream_scope_handle dbh(zfp, header, ZFP_HEADER_SIZE_BITS / CHAR_BIT);
+    // intermediate buffer needed (bitstream accesses multiples of wordsize)
+    size_t roundedSizeBytes = ((ZFP_HEADER_SIZE_BITS + stream_word_bits - 1) & ~(stream_word_bits - 1)) / CHAR_BIT;
+    Buffer_scope_handle bh(roundedSizeBytes);
+
+    Dual_bitstream_scope_handle dbh(zfp, bh.buffer, roundedSizeBytes);
     Zfp_field_scope_handle zfh(type, nx, ny, nz);
 
     // write header
     zfp_write_header(zfp, zfh.field, ZFP_HEADER_FULL);
     stream_flush(zfp->stream);
+
+    // copy buffer to zfp_header
+    memcpy(header->buffer, bh.buffer, ZFP_HEADER_SIZE_BITS / CHAR_BIT);
   }
 
 protected:
   // "_scope_handle" classes useful when throwing exceptions in read_header()
+
+  class Buffer_scope_handle {
+    public:
+      uchar* buffer;
+
+      Buffer_scope_handle(size_t size) {
+        buffer = new uchar[size];
+      }
+
+      ~Buffer_scope_handle() {
+        delete[] buffer;
+      }
+  };
 
   // redirect zfp_stream->bitstream to zfp_header while object remains in scope
   class Dual_bitstream_scope_handle {
@@ -168,11 +188,11 @@ protected:
       bitstream* newBs;
       zfp_stream* zfp;
 
-      Dual_bitstream_scope_handle(zfp_stream* zfp, zfp_header* header, size_t headerSizeBytes) :
+      Dual_bitstream_scope_handle(zfp_stream* zfp, uchar* buffer, size_t bufferSizeBytes) :
         zfp(zfp)
       {
         oldBs = zfp_stream_bit_stream(zfp);
-        newBs = stream_open(header, headerSizeBytes);
+        newBs = stream_open(buffer, bufferSizeBytes);
 
         stream_rewind(newBs);
         zfp_stream_set_bit_stream(zfp, newBs);
@@ -284,8 +304,15 @@ protected:
   {
     // (already checked header not null in constructor)
 
-    // cast off const to satisfy bitstream constructor (we only perform reads anyway)
-    Dual_bitstream_scope_handle dbh(zfp, (zfp_header*)header->buffer, ZFP_HEADER_SIZE_BITS / CHAR_BIT);
+    // copy header into padded buffer (bitstream requires multiples of words)
+    size_t roundedSizeBytes = ((ZFP_HEADER_SIZE_BITS + stream_word_bits - 1) & ~(stream_word_bits - 1)) / CHAR_BIT;
+    Buffer_scope_handle bh(roundedSizeBytes);
+
+    size_t headerSizeBytes = ZFP_HEADER_SIZE_BITS / CHAR_BIT;
+    memcpy(bh.buffer, header->buffer, headerSizeBytes);
+    memset(bh.buffer + headerSizeBytes, 0, roundedSizeBytes - headerSizeBytes);
+
+    Dual_bitstream_scope_handle dbh(zfp, bh.buffer, roundedSizeBytes);
     Zfp_field_scope_handle zfh;
 
     // read header to populate member variables associated with zfp_stream
